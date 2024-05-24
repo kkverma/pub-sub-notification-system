@@ -226,6 +226,8 @@ def main(event, context):
     `aws s3 cp hello-world.txt s3://{BUCKET_NAME}/`
 2. Check the specified Slack channel for a notification about the new file upload.
 ![alt text](pub-sub-slack.png "PubSub Slack Notification")
+3. Do not forget to clean your aws stacks after testing.
+    `cdk destroy`
 
 ### Conclusion
 This project demonstrates how to build a scalable and decoupled Pub/Sub notification system using AWS services. By leveraging S3, SNS, SQS, Lambda, and Slack, we can efficiently handle file upload events and notify stakeholders in real-time.
