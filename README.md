@@ -32,8 +32,8 @@ The architecture consists of the following components:
 ### Clone the repository:
 
 ```sh
-git clone https://github.com/your-repo/aws-pubsub-notification-system.git
-cd aws-pubsub-notification-system
+git clone https://github.com/kkverma/pub-sub-notification-system.git.git
+cd pub-sub-notification-system
 ```
 ### Install dependencies:
 
@@ -57,61 +57,94 @@ Here is the CDK stack definition (in Python):
 
 ```python
 from aws_cdk import (
+    # Duration,
+    RemovalPolicy,
+    Stack,
+    # aws_sqs as sqs,
     aws_s3 as s3,
+    aws_kms as kms,
+    aws_iam as iam,
     aws_sns as sns,
-    aws_sns_subscriptions as subs,
     aws_sqs as sqs,
     aws_lambda as _lambda,
-    aws_iam as iam,
-    core,
+    aws_sns_subscriptions as sns_subscriptions,
+    aws_lambda_event_sources as lambda_event_sources,
+    aws_s3_notifications as s3_notifications
 )
+from constructs import Construct
 
-class PubSubNotificationStack(core.Stack):
+class PubSubStack(Stack):
 
-    def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
-        super().__init__(scope, id, **kwargs)
+    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+        super().__init__(scope, construct_id, **kwargs)
 
-        # S3 bucket
-        bucket = s3.Bucket(self, "MyBucket")
+        account_id = self.node.try_get_context('ACCOUNT_ID')
+        app_name = self.node.try_get_context('APP_NAME')
 
-        # SNS topic
-        topic = sns.Topic(self, "MyTopic")
+        # Kms key
+        key = kms.Key(self, f'{app_name}Key',
+                      alias= f'{app_name}KeyAlias',
+                      description='Key for PubSub')
+        
+        key.grant_encrypt_decrypt(iam.AccountRootPrincipal())
 
-        # S3 event notification to SNS
-        bucket.add_event_notification(s3.EventType.OBJECT_CREATED, s3_notifications.SnsDestination(topic))
-
-        # SQS queue
-        queue = sqs.Queue(self, "MyQueue")
-
-        # Subscribe SQS to SNS topic
-        topic.add_subscription(subs.SqsSubscription(queue))
-
-        # Lambda function for processing SQS messages and sending to Slack
-        lambda_role = iam.Role(self, "LambdaRole", 
-            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
-            ]
+        # s3 bucket       
+        s3_bucket = s3.Bucket(self, 
+                              f'{app_name}Bucket',
+                              bucket_name=f'{account_id}-ap-south-1-pubsub-bucket',
+                              encryption_key=key,
+                              removal_policy=RemovalPolicy.DESTROY,
+                              auto_delete_objects=True
+                              )
+        # sns topic
+        sns_topic = sns.Topic(self, f'{app_name}Topic',
+                              topic_name=f'{app_name}Topic')
+        
+        # sqs queue
+        sqs_queue = sqs.Queue(self, f'{app_name}Queue',
+                              queue_name=f'{app_name}Queue')
+        
+        # lambda layer for external libraries used in lambda
+        lambda_layer = _lambda.LayerVersion(self, f'{app_name}LambdaLayer',
+            code=_lambda.Code.from_asset("./assets/lambda_layer"),
+            compatible_runtimes=[_lambda.Runtime.PYTHON_3_9],
+            description="A layer to include requests package"
         )
-
-        function = _lambda.Function(self, "MyFunction",
-            runtime=_lambda.Runtime.PYTHON_3_8,
-            handler="handler.lambda_handler",
-            code=_lambda.Code.from_asset("lambda"),
+        
+        # lambda function
+        lambda_function = _lambda.Function(self, f'{app_name}LambdaFunction',
+            function_name=f'{app_name}LambdaFunction',
+            runtime=_lambda.Runtime.PYTHON_3_9,
+            handler="handler.main",
+            code=_lambda.Code.from_asset("./assets/lambda"),
+            layers=[lambda_layer],
             environment={
-                "SLACK_WEBHOOK_URL": os.environ['SLACK_WEBHOOK_URL']
-            },
-            role=lambda_role
+                'SLACK_WEBHOOK_URL': self.node.try_get_context('SLACK_WEBHOOK_URL')  # Slack Webhook URL as environment variable
+            }
         )
 
-        # Grant the Lambda function permission to read from the SQS queue
-        queue.grant_consume_messages(function)
+        # Add sqs subscription to sns topic
+        sns_topic.add_subscription(sns_subscriptions.SqsSubscription(sqs_queue))
 
-        # Trigger Lambda function on new SQS messages
-        function.add_event_source(_lambda_event_sources.SqsEventSource(queue))
+        # Add sqs as event source for lambda function
+        sqs_queue.grant_consume_messages(lambda_function)
+        lambda_function.add_event_source(lambda_event_sources.SqsEventSource(sqs_queue))
 
-app = core.App()
-PubSubNotificationStack(app, "PubSubNotificationStack")
+        # Add s3 event notification to sns topic
+        s3_bucket.add_event_notification(s3.EventType.OBJECT_CREATED, s3_notifications.SnsDestination(sns_topic))
+
+
+app = cdk.App(
+    context= {
+        'ACCOUNT_ID': os.getenv('AWS_ACCOUNT_ID'),
+        'APP_NAME': 'PubSub',
+        'SLACK_WEBHOOK_URL': os.getenv('SLACK_WEBHOOK_URL')
+    }
+)
+stack = PubSubStack(app, "PubSubStack",
+    env=cdk.Environment(account=os.getenv('AWS_ACCOUNT_ID'), region='ap-south-1'),
+    )
+
 app.synth()
 
 ```
@@ -123,55 +156,76 @@ Create a lambda directory and add a handler.py file with the following code:
 import json
 import os
 import requests
+from datetime import datetime
 
-def lambda_handler(event, context):
-    slack_webhook_url = os.environ['SLACK_WEBHOOK_URL']
-    
+def main(event, context):
+    slack_webhook_url = os.getenv('SLACK_WEBHOOK_URL')
+
     for record in event['Records']:
+        # Process the SQS message
         sns_message = json.loads(record['body'])
         s3_event = json.loads(sns_message['Message'])
-        
-        bucket_name = s3_event['Records'][0]['s3']['bucket']['name']
-        file_name = s3_event['Records'][0]['s3']['object']['key']
-        
-        slack_message = {
-            "blocks": [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*New file uploaded*\nBucket: `{bucket_name}`\nFile: `{file_name}`"
-                    }
-                },
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {
-                                "type": "plain_text",
-                                "text": "View in S3"
-                            },
-                            "url": f"https://s3.console.aws.amazon.com/s3/buckets/{bucket_name}"
-                        }
-                    ]
-                }
-            ]
-        }
-        
-        response = requests.post(slack_webhook_url, json=slack_message)
-        if response.status_code != 200:
-            raise ValueError(f"Request to Slack returned an error {response.status_code}, the response is:\n{response.text}")
+        print(s3_event)
 
-    return {
-        'statusCode': 200,
-        'body': json.dumps('Slack notification sent successfully!')
-    }
+        for s3_record in s3_event['Records']:
+            s3_bucket_name = s3_record['s3']['bucket']['name']
+            s3_object_key = s3_record['s3']['object']['key']
+            event_time = s3_record['eventTime']
+
+            # Convert eventTime to a Unix timestamp
+            event_datetime = datetime.strptime(event_time, "%Y-%m-%dT%H:%M:%S.%fZ")
+            timestamp = int(event_datetime.timestamp())
+            # Generate S3 object URL
+            s3_object_url = f"https://s3.console.aws.amazon.com/s3/object/{s3_bucket_name}/{s3_object_key}?region=ap-south-1"
+
+
+            # Format the Slack message
+            slack_message = {
+                "attachments": [
+                    {
+                        "fallback": f"New file uploaded to {s3_bucket_name}",
+                        "color": "#36a64f",
+                        "title": "New S3 Upload",
+                        "fields": [
+                            {
+                                "title": "Bucket",
+                                "value": s3_bucket_name,
+                                "short": True
+                            },
+                            {
+                                "title": "File",
+                                "value": s3_object_key,
+                                "short": True
+                            }
+                        ],
+                        "footer": "AWS S3 Notification",
+                        "ts": timestamp,
+                        "actions": [
+                            {
+                                "type": "button",
+                                "text": "View in S3",
+                                "url": s3_object_url
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            # Send message to Slack
+            response = requests.post(slack_webhook_url, json=slack_message)
+
+            if response.status_code != 200:
+                raise ValueError(f"Request to slack returned an error {response.status_code}, the response is:\n{response.text}")
+
+    return {"statusCode": 200, "body": json.dumps('Message processed')}
+
 ```
 
 ### Testing
 1. Upload a file to the configured S3 bucket.
+    `aws s3 cp hello-world.txt s3://{BUCKET_NAME}/`
 2. Check the specified Slack channel for a notification about the new file upload.
+![alt text](pub-sub-slack.png "PubSub Slack Notification")
 
 ### Conclusion
 This project demonstrates how to build a scalable and decoupled Pub/Sub notification system using AWS services. By leveraging S3, SNS, SQS, Lambda, and Slack, we can efficiently handle file upload events and notify stakeholders in real-time.
