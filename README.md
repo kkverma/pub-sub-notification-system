@@ -22,10 +22,12 @@ The architecture consists of the following components:
 ## Prerequisites
 1. AWS account with appropriate permissions.
 2. AWS CLI installed and configured.
-3. AWS CDK (Cloud Development Kit) installed.
-4. A Slack workspace and an incoming webhook URL.
-5. Node Installed.
-6. Python
+3. AWS CDK (Cloud Development Kit) installed. 
+(https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html)
+
+4. A Slack workspace and an incoming webhook URL. (https://api.slack.com/messaging/webhooks)
+5. Node Installed. (https://github.com/jasongin/nvs)
+6. Python (https://www.python.org/about/gettingstarted/)
 
 ## Setup and Deployment
 
@@ -231,3 +233,11 @@ def main(event, context):
 
 ### Conclusion
 This project demonstrates how to build a scalable and decoupled Pub/Sub notification system using AWS services. By leveraging S3, SNS, SQS, Lambda, and Slack, we can efficiently handle file upload events and notify stakeholders in real-time.
+
+## Useful Resources About Pub Sub Pattern
+
+1. https://ably.com/topic/pub-sub-architecture
+2. https://cloud.google.com/pubsub/docs/overview
+3. https://aws.amazon.com/what-is/pub-sub-messaging/
+4. https://redis.io/docs/latest/develop/interact/pubsub/
+5. https://en.wikipedia.org/wiki/Publish%E2%80%93subscribe_pattern
